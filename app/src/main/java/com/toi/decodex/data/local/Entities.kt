@@ -13,7 +13,8 @@ data class PuzzleEntity(
     val colCount: Int,
     val title: String,
     val theme: String,
-    val gridLayout: String
+    val gridLayout: String,
+    val userProgress: String? = null
 )
 
 @Entity(

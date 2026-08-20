@@ -25,9 +25,9 @@ fun PuzzleListScreen(puzzles: List<PuzzleEntity>, onPuzzleClick: (String) -> Uni
                     elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(text = puzzle.title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text(text = puzzle.title ?: "", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(text = "Theme: ${puzzle.theme} • Difficulty: ${puzzle.difficulty}", fontSize = 14.sp)
+                        Text(text = "Theme: ${puzzle.theme ?: ""} • Difficulty: ${puzzle.difficulty ?: ""}", fontSize = 14.sp)
                     }
                 }
             }

@@ -1,6 +1,7 @@
 package com.toi.decodex.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.toi.decodex.data.local.ClueEntity
 import com.toi.decodex.data.local.PuzzleDao
@@ -8,6 +9,7 @@ import com.toi.decodex.data.local.PuzzleEntity
 import com.toi.decodex.ui.state.CellUiState
 import com.toi.decodex.ui.state.Direction
 import com.toi.decodex.ui.state.GameUiState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +36,7 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
     val uiState: StateFlow<GameUiState> = _uiState.asStateFlow()
 
     private var currentClues: List<ClueEntity> = emptyList()
+    private var currentPuzzleId: String? = null
     private var timerJob: Job? = null
 
     init {
@@ -54,8 +57,17 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
             val puzzle = puzzles.find { it.puzzleId == puzzleId } ?: return@launch
             val clues = dao.getCluesForPuzzle(puzzleId).first()
             currentClues = clues
+            currentPuzzleId = puzzleId
 
-            initializeGrid(puzzle.rowCount, puzzle.colCount, puzzle.gridLayout, puzzle.title, puzzle.theme, clues)
+            initializeGrid(
+                puzzle.rowCount, 
+                puzzle.colCount, 
+                puzzle.gridLayout, 
+                puzzle.title, 
+                puzzle.theme, 
+                clues,
+                puzzle.userProgress
+            )
             _screenState.value = ScreenState.Game(puzzleId)
             startTimer()
         }
@@ -64,6 +76,7 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
     fun backToList() {
         timerJob?.cancel()
         _screenState.value = ScreenState.PuzzleList
+        currentPuzzleId = null
     }
 
     private fun startTimer() {
@@ -78,7 +91,8 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
     }
 
     private fun initializeGrid(
-        rows: Int, cols: Int, layout: String, title: String, theme: String, clues: List<ClueEntity>
+        rows: Int, cols: Int, layout: String, title: String, theme: String, 
+        clues: List<ClueEntity>, savedProgress: String?
     ) {
         val newGrid = mutableMapOf<Pair<Int, Int>, CellUiState>()
         for (r in 0 until rows) {
@@ -86,7 +100,15 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
                 val idx = r * cols + c
                 val isBlock = idx < layout.length && layout[idx] == '#'
                 val clue = clues.find { it.startX == r && it.startY == c }
+                
+                // Restore letter from savedProgress if available
+                val letter = if (!isBlock && savedProgress != null && idx < savedProgress.length) {
+                    val savedChar = savedProgress[idx]
+                    if (savedChar != ' ' && savedChar != '#') savedChar.toString() else ""
+                } else ""
+
                 newGrid[Pair(r, c)] = CellUiState(
+                    letter = letter,
                     isBlackBlock = isBlock,
                     clueNumber = clue?.clueNumber
                 )
@@ -131,9 +153,12 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
         updatedGrid[Pair(r, c)] = cell.copy(letter = char.uppercase())
 
         val nextCoords = getNextCell(r, c, current.currentDirection, current.rowCount, current.colCount, updatedGrid)
+        
         _uiState.update {
             it.copy(grid = updatedGrid, selectedRow = nextCoords.first, selectedCol = nextCoords.second)
         }
+        
+        saveProgress(updatedGrid)
         updateHighlights()
         checkForWin(updatedGrid)
     }
@@ -159,7 +184,30 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
                 }
             }
         }
+        saveProgress(updatedGrid)
         updateHighlights()
+    }
+
+    private fun saveProgress(grid: Map<Pair<Int, Int>, CellUiState>) {
+        val puzzleId = currentPuzzleId ?: return
+        val rows = _uiState.value.rowCount
+        val cols = _uiState.value.colCount
+        
+        val progressString = StringBuilder()
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val cell = grid[Pair(r, c)]
+                progressString.append(
+                    if (cell?.isBlackBlock == true) "#" 
+                    else if (cell?.letter.isNullOrEmpty()) " " 
+                    else cell!!.letter
+                )
+            }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.updatePuzzleProgress(puzzleId, progressString.toString())
+        }
     }
 
     private fun checkForWin(grid: Map<Pair<Int, Int>, CellUiState>) {
@@ -176,7 +224,6 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
             }
         }
 
-        // If all clues match!
         timerJob?.cancel()
         _uiState.update { it.copy(isWon = true) }
     }
@@ -206,15 +253,50 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
 
     private fun getNextCell(r: Int, c: Int, dir: Direction, rows: Int, cols: Int, grid: Map<Pair<Int, Int>, CellUiState>): Pair<Int, Int> {
         var nr = r; var nc = c
-        if (dir == Direction.ACROSS && c + 1 < cols) nc++
-        else if (dir == Direction.DOWN && r + 1 < rows) nr++
-        return if (grid[Pair(nr, nc)]?.isBlackBlock == false) Pair(nr, nc) else Pair(r, c)
+        do {
+            if (dir == Direction.ACROSS) {
+                nc++
+                if (nc >= cols) { nc = 0; nr++ }
+            } else {
+                nr++
+                if (nr >= rows) { nr = 0; nc++ }
+            }
+            if (nr >= rows || nc >= cols) return Pair(r, c) // Hit the end
+            
+            val cell = grid[Pair(nr, nc)]
+            if (cell != null && !cell.isBlackBlock) return Pair(nr, nc)
+        } while (nr < rows && nc < cols)
+        
+        return Pair(r, c)
     }
 
     private fun getPrevCell(r: Int, c: Int, dir: Direction, grid: Map<Pair<Int, Int>, CellUiState>): Pair<Int, Int> {
         var pr = r; var pc = c
-        if (dir == Direction.ACROSS && c - 1 >= 0) pc--
-        else if (dir == Direction.DOWN && r - 1 >= 0) pr--
-        return if (grid[Pair(pr, pc)]?.isBlackBlock == false) Pair(pr, pc) else Pair(r, c)
+        val rows = _uiState.value.rowCount
+        val cols = _uiState.value.colCount
+        do {
+            if (dir == Direction.ACROSS) {
+                pc--
+                if (pc < 0) { pc = cols - 1; pr-- }
+            } else {
+                pr--
+                if (pr < 0) { pr = rows - 1; pc-- }
+            }
+            if (pr < 0 || pc < 0) return Pair(r, c)
+            val cell = grid[Pair(pr, pc)]
+            if (cell != null && !cell.isBlackBlock) return Pair(pr, pc)
+        } while (pr >= 0 && pc >= 0)
+        
+        return Pair(r, c)
+    }
+
+    class Factory(private val dao: PuzzleDao) : ViewModelProvider.Factory {
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(DecodexViewModel::class.java)) {
+                @Suppress("UNCHECKED_CAST")
+                return DecodexViewModel(dao) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
     }
 }

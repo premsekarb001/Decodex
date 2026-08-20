@@ -11,4 +11,7 @@ interface PuzzleDao {
 
     @Query("SELECT * FROM clues WHERE puzzleId = :puzzleId")
     fun getCluesForPuzzle(puzzleId: String): Flow<List<ClueEntity>>
+
+    @Query("UPDATE puzzles SET userProgress = :progress WHERE puzzleId = :puzzleId")
+    fun updatePuzzleProgress(puzzleId: String, progress: String): Int
 }

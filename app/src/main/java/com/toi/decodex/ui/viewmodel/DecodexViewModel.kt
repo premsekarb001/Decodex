@@ -1,5 +1,6 @@
 package com.toi.decodex.ui.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -9,12 +10,14 @@ import com.toi.decodex.data.local.PuzzleEntity
 import com.toi.decodex.ui.state.CellUiState
 import com.toi.decodex.ui.state.Direction
 import com.toi.decodex.ui.state.GameUiState
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -25,6 +28,10 @@ sealed interface ScreenState {
 }
 
 class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
+
+    private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
+        Log.e("DecodexViewModel", "Uncaught coroutine exception: ", exception)
+    }
 
     private val _screenState = MutableStateFlow<ScreenState>(ScreenState.PuzzleList)
     val screenState: StateFlow<ScreenState> = _screenState.asStateFlow()
@@ -44,32 +51,41 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
     }
 
     private fun fetchPuzzles() {
-        viewModelScope.launch {
-            dao.getAllPuzzles().collect { puzzles ->
-                _puzzleList.value = puzzles
-            }
+        viewModelScope.launch(exceptionHandler) {
+            dao.getAllPuzzles()
+                .catch { e -> 
+                    Log.e("DecodexViewModel", "Error fetching puzzles", e)
+                    emit(emptyList()) 
+                }
+                .collect { puzzles ->
+                    _puzzleList.value = puzzles
+                }
         }
     }
 
     fun selectPuzzle(puzzleId: String) {
-        viewModelScope.launch {
-            val puzzles = dao.getAllPuzzles().first()
-            val puzzle = puzzles.find { it.puzzleId == puzzleId } ?: return@launch
-            val clues = dao.getCluesForPuzzle(puzzleId).first()
-            currentClues = clues
-            currentPuzzleId = puzzleId
+        viewModelScope.launch(exceptionHandler) {
+            try {
+                val puzzles = dao.getAllPuzzles().first()
+                val puzzle = puzzles.find { it.puzzleId == puzzleId } ?: return@launch
+                val clues = dao.getCluesForPuzzle(puzzleId).first()
+                currentClues = clues
+                currentPuzzleId = puzzleId
 
-            initializeGrid(
-                puzzle.rowCount, 
-                puzzle.colCount, 
-                puzzle.gridLayout, 
-                puzzle.title, 
-                puzzle.theme, 
-                clues,
-                puzzle.userProgress
-            )
-            _screenState.value = ScreenState.Game(puzzleId)
-            startTimer()
+                initializeGrid(
+                    puzzle.rowCount, 
+                    puzzle.colCount, 
+                    puzzle.gridLayout, 
+                    puzzle.title, 
+                    puzzle.theme, 
+                    clues,
+                    puzzle.userProgress
+                )
+                _screenState.value = ScreenState.Game(puzzleId)
+                startTimer()
+            } catch (e: Exception) {
+                Log.e("DecodexViewModel", "Error selecting puzzle: $puzzleId", e)
+            }
         }
     }
 
@@ -199,8 +215,7 @@ class DecodexViewModel(private val dao: PuzzleDao) : ViewModel() {
                 val cell = grid[Pair(r, c)]
                 progressString.append(
                     if (cell?.isBlackBlock == true) "#" 
-                    else if (cell?.letter.isNullOrEmpty()) " " 
-                    else cell!!.letter
+                    else cell?.letter.takeIf { it?.isNotEmpty() == true } ?: " "
                 )
             }
         }

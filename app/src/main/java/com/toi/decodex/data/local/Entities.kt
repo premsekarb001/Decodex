@@ -19,6 +19,7 @@ data class PuzzleEntity(
 
 @Entity(
     tableName = "clues",
+    indices = [androidx.room.Index(value = ["puzzleId"])],
     foreignKeys = [
         ForeignKey(
             entity = PuzzleEntity::class,
